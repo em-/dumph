@@ -1,0 +1,272 @@
+#!/usr/bin/env python3
+"""dumph - The Phabricator Dumper
+
+Usage:
+  dumph --phabricator=<api> <query> [--output-format=<fmt>]
+
+Options:
+  -f --output-format=<fmt>  The format of the output, csv or html. [default: csv]
+  -p --phabricator=<api>    Phabricator API entrypoint URL
+  -h --help                 Show this screen.
+  --version                 Show version.
+"""
+
+import csv
+import itertools
+import socket
+import sys
+from phabricator import Phabricator
+from docopt import docopt
+
+__version__ = '0.20170126'
+
+def retry(f):
+    r = None
+    while r is None:
+        try:
+            r = f()
+        except socket.timeout:
+            print('timeout, retry', file=sys.stderr)
+    return r
+
+def grouper(iterable, n, fillvalue=None):
+    args = [iter(iterable)] * n
+    return itertools.zip_longest(*args, fillvalue=fillvalue)
+
+class Dumph:
+    def __init__(self, api):
+        self.phab = Phabricator(host=api)
+        try:
+          self.phab.conduit.ping()
+        except Exception as e:
+          raise Exception("failed to connect to '{}', check your ~/.arcrc".format(api)) from e
+        self.tasks = {}
+        self.tasks_by_id = {}
+        self.tasks_top = set()
+        self.projects = {}
+        self.columns = {}
+        self.priorities = {}
+
+        self.task_open_statuses = self.phab.maniphest.querystatuses().openStatuses
+
+    def tasks_search(self, query):
+        last = None
+        tasks = {}
+        while True:
+            r = retry(lambda: self.phab.maniphest.search(queryKey=query, limit=100, after=last))
+            last = r.data[-1]['id'] if r.data else None
+            tasks.update({t['id']: t for t in r.data})
+
+            print("found {} tasks (+{})".format(len(tasks), len(r.data)), file=sys.stderr)
+            if not r.data:
+                break
+        return [int(t) for t in tasks]
+
+    def tasks_fetch(self, **criteria):
+        offset = 0
+        while True:
+            limit = 100
+            r = retry(lambda: self.phab.maniphest.query(**criteria, limit=limit, offset=offset))
+            offset += limit
+            # make tasks available both by phid and numeric id
+            self.tasks.update(r)
+            self.tasks_by_id.update({t['id']: t for t in r.values()})
+
+            print("got {} tasks (+{})".format(len(self.tasks), len(r)), file=sys.stderr)
+            if not r:
+                break
+
+    def fetch(self, query):
+        # TODO: avoid this double fetch
+        ids = self.tasks_search(query)
+        self.tasks_fetch(ids=ids)
+
+        while True:
+            children = set()
+            for t in self.tasks.values():
+                children |= set(t['dependsOnTaskPHIDs'])
+            missing = children.difference(set(self.tasks.keys()))
+            if not missing:
+                break
+            print("fetch {} subtasks".format(len(missing)), file=sys.stderr)
+            for chunk in grouper(missing, 100):
+                self.tasks_fetch(phids=list(chunk))
+
+        self.tasks_top = set(self.tasks.keys())
+        for t in self.tasks.values():
+            for subtask in t['dependsOnTaskPHIDs']:
+                self.tasks_top.discard(subtask)
+
+        for chunk in grouper(self.tasks.values(), 100):
+            ids = [int(t['id']) for t in chunk if t]
+            r = retry(lambda: self.phab.maniphest.gettasktransactions(ids=ids))
+
+            print("got {} transactions for {} tasks".format(sum(len(txns) for txns in r.values()), len(chunk)), file=sys.stderr)
+            for task_id, transactions in r.items():
+                columns = {}
+                points = None
+                transactions = sorted(transactions, key=lambda x: x['dateCreated'])
+                for txn in transactions:
+                    if txn['transactionType'] == 'core:columns':
+                        board = txn['newValue'][0]['boardPHID']
+                        columns[board] = txn['newValue'][0]['columnPHID']
+                    if txn['transactionType'] == 'points':
+                        points = txn['newValue']
+                self.tasks_by_id[task_id]['columns'] = columns
+                self.tasks_by_id[task_id]['points'] = points
+
+        columnPHIDs = set(col for x in self.tasks.values() for col in x.get('columns', {}).values())
+        for chunk in grouper(columnPHIDs, 100):
+            chunk = list(filter(lambda x: x, chunk))
+            r = retry(lambda: self.phab.phid.query(phids=list(filter(lambda x: x, chunk))))
+            self.columns.update(r)
+            print("got {} columns (+{})".format(len(self.columns), len(r)), file=sys.stderr)
+
+        projectPHIDs = set(p for x in self.tasks.values() for p in x['projectPHIDs'])
+        for chunk in grouper(projectPHIDs, 100):
+            chunk = list(filter(lambda x: x, chunk))
+            r = retry(lambda: self.phab.project.query(phids=list(filter(lambda x: x, chunk))))
+            self.projects.update(r.data)
+            print("got {} projects (+{})".format(len(self.projects), len(r.data)), file=sys.stderr)
+
+        for chunk in grouper(projectPHIDs, 100):
+            chunk = list(filter(lambda x: x, chunk))
+            r = retry(lambda: self.phab.phid.query(phids=list(filter(lambda x: x, chunk))))
+            print("got {} projects phids".format(len(r)), file=sys.stderr)
+            for phid, data in r.items():
+                self.projects[phid].update({
+                  'fullName': data['fullName'],
+                  'uri': data['uri'],
+                  'status': data['status'],
+                })
+        self.priorities = { t['priorityColor']: t['priority'] for t in self.tasks.values()}
+
+    def task_is_top(self, t):
+        return t['phid'] in self.tasks_top
+
+    def to_html(self, ):
+      def task_render(t):
+          def project_format(p, col):
+              project = self.projects[p]
+              column = self.columns.get(p)
+              ret = '\n'.join([
+                  '<li><a class="task-project task-project-{id}" href="{uri}">'.format(**project),
+                  project['fullName'],
+                  '<span class="task-project-column">{name}</span>'.format(**column) if column else '',
+                  '</a></li>'])
+              return ret
+          s = '\n'.join(filter(lambda x: x, (
+              '<li class="task task-closed-{isClosed} task-status-{status} task-priority-{priorityColor}"'.format(**t),
+              'data-top-task="{}"'.format(str(self.task_is_top(t)).lower()),
+              'data-task-projects="{}"'.format(','.join(self.projects[p]['id'] for p in t['projectPHIDs'] if p in self.projects)),
+              'data-task-priority="{priorityColor}"'.format(**t),
+              '''>
+                <div class="task-data">
+                  <div class="task-primary">
+                    <a class="task-id" href="{uri}">{objectName}</a>'''.format(**t),
+              '     <span class="task-points">{points}</span>'.format(**t) if t['points'] else None,
+              '''
+                    <span class="task-desc">{title}</span>
+                  </div>
+                  <div class="task-secondary">
+                  <span class="task-priority">{priority}</span>
+                  /
+                  <span class="task-status">{statusName}</span>
+                  <ul class="task-projects">
+              '''.format(**t),
+              *(project_format(p, t.get('columns', {}).get(p)) for p in t['projectPHIDs'] if p in self.projects),
+              '''  </ul>
+                  </div>
+                 </div>''',
+              None if not t.get('dependsOnTaskPHIDs') else '\n'.join([
+                '<ul class="task-children">',
+                  *(task_render(c) for c in sorted((self.tasks[child_id] for child_id in t['dependsOnTaskPHIDs'] if child_id in self.tasks), key=lambda c: int(c['id']))),
+                '</ul>']),
+              '</li>')))
+          return s
+
+      print('''<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="dumph.css"/>
+  <script src="dumph.js"></script>
+</head>
+<body>
+<div class="stats">
+Total tasks: {task_count} | Total open: {open_count}
+</div>
+<div class="filters">
+  Project filters:
+  <button class="button-filter button-filter-project button-filter-project-all" data-project-filter='all'>all</button>'''.format(
+        task_count=len(self.tasks),
+        open_count=len(list(filter(lambda t: not t['isClosed'], self.tasks.values())))))
+      for p in self.projects.values():
+          print('''<button class="button-filter button-filter-project" data-project-filter='{id}'>{fullName}</button>'''.format(**p))
+      print('''<br/>
+  Priority filters:
+  <button class="button-filter button-filter-priority button-filter-priority-all" data-priority-filter='all'>all</button>''')
+      for priorityColor, priority in self.priorities.items():
+          print('''<button class="button-filter button-filter-priority button-filter-priority-{priorityColor}"
+              data-priority-filter='{priorityColor}'>{priority}</button>'''.format(priority=priority, priorityColor=priorityColor))
+      print('''</div>\n  <ul class="tasks">''')
+      for t in sorted(self.tasks.values(), key=lambda x: int(x['id']), reverse=True):
+          if not self.task_is_top(t):
+               continue
+          print(task_render(t))
+      print('</ul></body></html>')
+
+    def to_csv(self, ):
+      def task_render(toplevel, t, parent, writer):
+          def project_format(p, col):
+              ret = self.projects[p]['fullName']
+              if col:
+                  ret += " ({})".format(self.columns[col]['name'])
+              return ret
+          row = [
+              toplevel['id'],
+              t['id'],
+              parent['id'] if parent else None,
+              t.get('points'),
+              t['status'],
+              t['title'],
+              ', '.join(project_format(p, t.get('columns', {}).get(p)) for p in t['projectPHIDs'] if p in self.projects),
+          ]
+          writer.writerow(row)
+          children = sorted((self.tasks[child_id] for child_id in t['dependsOnTaskPHIDs'] if child_id in self.tasks), key=lambda x: int(x['id']))
+          for c in children:
+              if not c:
+                  continue
+              task_render(toplevel, c, t, writer)
+
+      writer = csv.writer(sys.stdout)
+      header = [
+          "Toplevel",
+          "Task",
+          "Parent",
+          "Points",
+          "Status",
+          "Title",
+          "Projects"
+      ]
+      writer.writerow(header)
+      for t in sorted(self.tasks.values(), key=lambda x: int(x['id']), reverse=True):
+          keep = self.task_is_top(t)
+          if not keep:
+               continue
+          task_render(t, t, None, writer)
+
+def main():
+    arguments = docopt(__doc__, version='Dumph '+__version__)
+    outfmt = arguments['--output-format']
+    api = arguments['--phabricator']
+    query = arguments['<query>']
+    d = Dumph(api);
+    d.fetch(query)
+    if outfmt == 'csv':
+        d.to_csv()
+    if outfmt == 'html':
+        d.to_html()
+
+if __name__ == '__main__':
+    main()
