@@ -17,6 +17,7 @@ import socket
 import sys
 from phabricator import Phabricator
 from docopt import docopt
+from pkg_resources import Requirement, resource_string
 
 __version__ = '0.20170126'
 
@@ -185,10 +186,8 @@ class Dumph:
               '</li>')))
           return s
 
-      with open('html/dumph.css') as css_file:
-          dumph_css = css_file.read()
-      with open('html/dumph.js') as js_file:
-          dumph_js = js_file.read()
+      dumph_css = resource_string(__name__, 'html/dumph.css').decode("utf-8")
+      dumph_js = resource_string(__name__, 'html/dumph.js').decode("utf-8")
       print('''<!DOCTYPE html>
 <html>
 <head>
