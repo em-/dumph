@@ -185,9 +185,9 @@ class Dumph:
               '</li>')))
           return s
 
-      with open('dumph.css') as css_file:
+      with open('html/dumph.css') as css_file:
           dumph_css = css_file.read()
-      with open('dumph.js') as js_file:
+      with open('html/dumph.js') as js_file:
           dumph_js = js_file.read()
       print('''<!DOCTYPE html>
 <html>
