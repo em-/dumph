@@ -6,7 +6,7 @@ Just define and run a query on Phabricator and copy the query id from the result
 
 ## How to use it
 
-    $ # run a query on Phab and grap its id or use one of the predefined ones
+    $ # run a query on Phab and grab its id or use one of the predefined ones
     $ QUERY_ID=open
     $ dumph "$QUERY_ID" --output-format=html > results.html
 
