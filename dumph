@@ -239,6 +239,7 @@ Total tasks: {task_count} | Total open: {open_count}
               t['id'],
               parent['id'] if parent else None,
               t.get('points'),
+              t['priority'],
               t['status'],
               t['title'],
               ', '.join(project_format(p, t.get('columns', {}).get(p)) for p in t['projectPHIDs'] if p in self.projects),
@@ -256,6 +257,7 @@ Total tasks: {task_count} | Total open: {open_count}
           "Task",
           "Parent",
           "Points",
+          "Priority",
           "Status",
           "Title",
           "Projects"
