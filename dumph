@@ -2,11 +2,12 @@
 """dumph - The Phabricator Dumper
 
 Usage:
-  dumph --phabricator=<api> <query> [--output-format=<fmt>]
+  dumph --phabricator=<api> <query> [--recursive --output-format=<fmt>]
 
 Options:
   -f --output-format=<fmt>  The format of the output, csv or html. [default: csv]
   -p --phabricator=<api>    Phabricator API entrypoint URL
+  -r --recursive            Fetch subtasks for each retrieved task
   -h --help                 Show this screen.
   --version                 Show version.
 """
@@ -77,12 +78,12 @@ class Dumph:
             if not r:
                 break
 
-    def fetch(self, query):
+    def fetch(self, query, recursive=False):
         # TODO: avoid this double fetch
         ids = self.tasks_search(query)
         self.tasks_fetch(ids=ids)
 
-        while True:
+        while recursive:
             children = set()
             for t in self.tasks.values():
                 children |= set(t['dependsOnTaskPHIDs'])
@@ -270,9 +271,10 @@ def main():
     arguments = docopt(__doc__, version='Dumph '+__version__)
     outfmt = arguments['--output-format']
     api = arguments['--phabricator']
+    recursive = arguments['--recursive']
     query = arguments['<query>']
     d = Dumph(api);
-    d.fetch(query)
+    d.fetch(query, recursive)
     if outfmt == 'csv':
         d.to_csv()
     if outfmt == 'html':
