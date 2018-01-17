@@ -16,8 +16,8 @@
 .task.task-priority-yellow { border-left-color: #f1c40f; }
 .task-points { border: 1px solid #AAA; border-radius: 2px; }
 .task-secondary { font-size: 80%; align-self: flex-end; }
-.task-projects { list-style: none; padding: 0; display: inline; }
-.task-projects li { list-style: none; display: inline; }
+.task-projects { list-style: none; padding: 0; display: inline-flex; }
+.task-projects li { list-style: none; align-self: flex-end; }
 .task-project { padding: 2px 1px; border: 1px solid #AAA; background: #F9F9FF; border-radius: 2px; text-decoration: none; color: inherit; }
 .task-priority-hidden { display: none; }
 .task-project-hidden { display: none; }
