@@ -68,7 +68,8 @@ class Dumph:
         offset = 0
         while True:
             limit = 100
-            r = retry(lambda: self.phab.maniphest.query(**criteria, limit=limit, offset=offset))
+            criteria.update(limit=limit, offset=offset)
+            r = retry(lambda: self.phab.maniphest.query(**criteria))
             offset += limit
             # make tasks available both by phid and numeric id
             self.tasks.update(r)
@@ -157,7 +158,7 @@ class Dumph:
                   '<span class="task-project-column">{name}</span>'.format(**column) if column else '',
                   '</a></li>'])
               return ret
-          s = '\n'.join(filter(lambda x: x, (
+          s = '\n'.join(filter(lambda x: x, [
               '<li class="task task-closed-{isClosed} task-status-{status} task-priority-{priorityColor}"'.format(**t),
               'data-top-task="{}"'.format(str(self.task_is_top(t)).lower()),
               'data-task-projects="{}"'.format(','.join(self.projects[p]['id'] for p in t['projectPHIDs'] if p in self.projects)),
@@ -175,16 +176,16 @@ class Dumph:
                   /
                   <span class="task-status">{statusName}</span>
                   <ul class="task-projects">
-              '''.format(**t),
-              *(project_format(p, t.get('columns', {}).get(p)) for p in t['projectPHIDs'] if p in self.projects),
-              '''  </ul>
+              '''.format(**t) ] +
+              list(project_format(p, t.get('columns', {}).get(p)) for p in t['projectPHIDs'] if p in self.projects) +
+              [ '''  </ul>
                   </div>
                  </div>''',
               None if not t.get('dependsOnTaskPHIDs') else '\n'.join([
-                '<ul class="task-children">',
-                  *(task_render(c) for c in sorted((self.tasks[child_id] for child_id in t['dependsOnTaskPHIDs'] if child_id in self.tasks), key=lambda c: int(c['id']))),
-                '</ul>']),
-              '</li>')))
+                '<ul class="task-children">' ] +
+                  list(task_render(c) for c in sorted((self.tasks[child_id] for child_id in t['dependsOnTaskPHIDs'] if child_id in self.tasks), key=lambda c: int(c['id']))) +
+                ['</ul>']),
+              '</li>']))
           return s
 
       dumph_css = resource_string(__name__, 'html/dumph.css').decode("utf-8")
