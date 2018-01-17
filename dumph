@@ -2,14 +2,20 @@
 """dumph - The Phabricator Dumper
 
 Usage:
-  dumph --phabricator=<api> <query> [--recursive --output-format=<fmt>]
+  dumph --phabricator=<api> <query> [options --extra=<spec>...]
 
 Options:
   -f --output-format=<fmt>  The format of the output, csv or html. [default: csv]
   -p --phabricator=<api>    Phabricator API entrypoint URL
   -r --recursive            Fetch subtasks for each retrieved task
+     --extra=<spec>         Include extra data
   -h --help                 Show this screen.
   --version                 Show version.
+
+Extra data:
+  The <spec> parameter is used to indicate the field name and the
+  dot-separated path to be used to extract the value from the JSON data for
+  the task, as in --spec="Field name:auxiliary.field-name".
 """
 
 import csv
@@ -21,6 +27,19 @@ from docopt import docopt
 from pkg_resources import Requirement, resource_string
 
 __version__ = '0.20170126'
+
+def usage():
+    usage_lines = []
+    lines = iter(__doc__.split('\n'))
+    for line in lines:
+      if line.startswith('Usage:'):
+        break
+    usage_lines.append(line)
+    for line in lines:
+      if not line.strip():
+        break
+      usage_lines.append(line)
+    return '\n'.join(usage_lines)
 
 def retry(f):
     r = None
@@ -147,7 +166,13 @@ class Dumph:
     def task_is_top(self, t):
         return t['phid'] in self.tasks_top
 
-    def to_html(self, ):
+    def _task_extract_field_value(self, t, field_path):
+        field_value = t
+        for path_component in field_path:
+            field_value = field_value[path_component]
+        return field_value
+
+    def to_html(self, extra):
       def task_render(t):
           def project_format(p, col):
               project = self.projects[p]
@@ -158,6 +183,22 @@ class Dumph:
                   '<span class="task-project-column">{name}</span>'.format(**column) if column else '',
                   '</a></li>'])
               return ret
+          def extra_format(t, extra):
+              items = []
+              for e in extra.items():
+                  field_name, field_path = e
+                  field_value = self._task_extract_field_value(t, field_path)
+                  if field_value is None:
+                      continue
+                  items.append('''
+                    <div class="task-extra-item">
+                        <span class="task-extra-name">{}</span>
+                        <span class="task-extra-value">{}</span>
+                    </div>'''.format(field_name, field_value))
+              if not items:
+                  return []
+              return ['<div class="task-extra">'] + items + ['</div>']
+
           s = '\n'.join(filter(lambda x: x, [
               '<li class="task task-closed-{isClosed} task-status-{status} task-priority-{priorityColor}"'.format(**t),
               'data-top-task="{}"'.format(str(self.task_is_top(t)).lower()),
@@ -179,7 +220,9 @@ class Dumph:
               '''.format(**t) ] +
               list(project_format(p, t.get('columns', {}).get(p)) for p in t['projectPHIDs'] if p in self.projects) +
               [ '''  </ul>
-                  </div>
+                  </div>'''] +
+              extra_format(t, extra) +
+              ['''
                  </div>''',
               None if not t.get('dependsOnTaskPHIDs') else '\n'.join([
                 '<ul class="task-children">' ] +
@@ -228,7 +271,7 @@ Total tasks: {task_count} | Total open: {open_count}
           print(task_render(t))
       print('</ul></body></html>')
 
-    def to_csv(self, ):
+    def to_csv(self, extra):
       def task_render(toplevel, t, parent, writer):
           def project_format(p, col):
               ret = self.projects[p]['fullName']
@@ -245,6 +288,7 @@ Total tasks: {task_count} | Total open: {open_count}
               t['title'],
               ', '.join(project_format(p, t.get('columns', {}).get(p)) for p in t['projectPHIDs'] if p in self.projects),
           ]
+          row += [self._task_extract_field_value(t, field_path) for field_path in extra.values()]
           writer.writerow(row)
           children = sorted((self.tasks[child_id] for child_id in t['dependsOnTaskPHIDs'] if child_id in self.tasks), key=lambda x: int(x['id']))
           for c in children:
@@ -263,6 +307,7 @@ Total tasks: {task_count} | Total open: {open_count}
           "Title",
           "Projects"
       ]
+      header += extra.keys()
       writer.writerow(header)
       for t in sorted(self.tasks.values(), key=lambda x: int(x['id']), reverse=True):
           keep = self.task_is_top(t)
@@ -270,18 +315,33 @@ Total tasks: {task_count} | Total open: {open_count}
                continue
           task_render(t, t, None, writer)
 
+def parse_extra(extra):
+    e = [i.strip() for i in extra.split(':', 1)]
+    if len(e) != 2:
+      raise ValueError("missing separator ':' for extra argument '{}'".format(extra))
+    if not len(e[0]):
+      raise ValueError("empty field name for extra argument '{}'".format(extra))
+    if not len(e[1]):
+      raise ValueError("empty field path for extra argument '{}'".format(extra))
+    return e[0], e[1].split('.')
+
 def main():
     arguments = docopt(__doc__, version='Dumph '+__version__)
     outfmt = arguments['--output-format']
     api = arguments['--phabricator']
     recursive = arguments['--recursive']
+    extra = {}
+    try:
+      extra = dict(parse_extra(ex)for ex in arguments['--extra'])
+    except ValueError as e:
+      print('Error: {}\n\n{}'.format(e.args[0], usage()), file=sys.stderr)
     query = arguments['<query>']
     d = Dumph(api);
     d.fetch(query, recursive)
     if outfmt == 'csv':
-        d.to_csv()
+        d.to_csv(extra)
     if outfmt == 'html':
-        d.to_html()
+        d.to_html(extra)
 
 if __name__ == '__main__':
     main()

@@ -1,6 +1,6 @@
 .tasks > .task { margin-bottom: 0.25em; padding-bottom:0.25em; border-bottom: 1px solid #e0e0e0; }
 .button-filter-priority-blue:before { content: ""; display: inline-block; width: .7em; height: .7em; margin-right: 0.3em; background: #2980b9; }
-.task { list-style: none; margin-top: 0.25em; }
+.task { list-style: none; margin-top: 0.25em; position: relative; }
 .task:hover { background: #EEF; }
 .task.task-closed-True { color: #AAA; }
 .task.task-closed-True a { color: #AAF; }
@@ -21,3 +21,6 @@
 .task-project { padding: 2px 1px; border: 1px solid #AAA; background: #F9F9FF; border-radius: 2px; text-decoration: none; color: inherit; }
 .task-priority-hidden { display: none; }
 .task-project-hidden { display: none; }
+.task-extra { display: none; position: absolute; top: -1em; right: 1em; font-size: 80%; background: #eef; border: 1px solid #aaa; padding: 2px 4px;  }
+.task-extra:empty { display: none !important; }
+.task-data:hover > .task-extra { display: block; }
