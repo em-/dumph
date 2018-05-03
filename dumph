@@ -8,14 +8,14 @@ Options:
   -f --output-format=<fmt>  The format of the output, csv or html. [default: csv]
   -p --phabricator=<api>    Phabricator API entrypoint URL
   -r --recursive            Fetch subtasks for each retrieved task
-     --extra=<spec>         Include extra data
+     --extra=<spec>         Output extra data, see the section below
   -h --help                 Show this screen.
   --version                 Show version.
 
 Extra data:
   The <spec> parameter is used to indicate the field name and the
   dot-separated path to be used to extract the value from the JSON data for
-  the task, as in --spec="Field name:auxiliary.field-name".
+  the task, as in --extra="Field name:auxiliary.field-name".
 """
 
 import csv
@@ -65,6 +65,7 @@ class Dumph:
         self.tasks_by_id = {}
         self.tasks_top = set()
         self.projects = {}
+        self.users = {}
         self.columns = {}
         self.priorities = {}
 
@@ -151,6 +152,13 @@ class Dumph:
             self.projects.update(r.data)
             print("got {} projects (+{})".format(len(self.projects), len(r.data)), file=sys.stderr)
 
+        userPHIDs = set(t['ownerPHID'] for t in self.tasks.values())
+        for chunk in grouper(userPHIDs, 100):
+            chunk = list(filter(lambda x: x, chunk))
+            r = retry(lambda: self.phab.user.query(phids=list(filter(lambda x: x, chunk))))
+            self.users.update({u['phid']: u for u in r})
+            print("got {} users (+{})".format(len(self.users), len(r)), file=sys.stderr)
+
         for chunk in grouper(projectPHIDs, 100):
             chunk = list(filter(lambda x: x, chunk))
             r = retry(lambda: self.phab.phid.query(phids=list(filter(lambda x: x, chunk))))
@@ -199,6 +207,7 @@ class Dumph:
                   return []
               return ['<div class="task-extra">'] + items + ['</div>']
 
+          owner = self.users[t['ownerPHID']] if t['ownerPHID'] else None
           s = '\n'.join(filter(lambda x: x, [
               '<li class="task task-closed-{isClosed} task-status-{status} task-priority-{priorityColor}"'.format(**t),
               'data-top-task="{}"'.format(str(self.task_is_top(t)).lower()),
@@ -212,8 +221,9 @@ class Dumph:
               '''
                     <span class="task-desc">{title}</span>
                   </div>
-                  <div class="task-secondary">
-                  <span class="task-priority">{priority}</span>
+                  <div class="task-secondary">'''.format(**t),
+              '<a class="task-owner" href={uri}>@{userName}</a> / '.format(**owner) if owner else None,
+              '''<span class="task-priority">{priority}</span>
                   /
                   <span class="task-status">{statusName}</span>
                   <ul class="task-projects">
@@ -278,6 +288,7 @@ Total tasks: {task_count} | Total open: {open_count}
               if col:
                   ret += " ({})".format(self.columns[col]['name'])
               return ret
+          owner = self.users[t['ownerPHID']] if t['ownerPHID'] else None
           row = [
               toplevel['id'],
               t['id'],
@@ -286,6 +297,7 @@ Total tasks: {task_count} | Total open: {open_count}
               t['priority'],
               t['status'],
               t['title'],
+              '@'+owner['userName'] if owner else None,
               ', '.join(project_format(p, t.get('columns', {}).get(p)) for p in t['projectPHIDs'] if p in self.projects),
           ]
           row += [self._task_extract_field_value(t, field_path) for field_path in extra.values()]
@@ -305,6 +317,7 @@ Total tasks: {task_count} | Total open: {open_count}
           "Priority",
           "Status",
           "Title",
+          "Owner",
           "Projects"
       ]
       header += extra.keys()
